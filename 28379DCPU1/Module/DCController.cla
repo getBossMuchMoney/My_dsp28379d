@@ -1,0 +1,279 @@
+/*******************************************************************************
+ * File Name: Cla_User.c
+ * Description: The ePWM initialization functions.
+ * Designer: Miller Xue
+ * Version: 00
+ * Copyright: Liyuan Haina Co.Ltd
+ *******************************************************************************/
+#include "F28x_Project.h"
+#include "DCController.h"
+#include "Gpio_User.h"
+#include "Adc_User.h"
+#include "PfcController.h"
+#include "ShareData.h"
+#include "SuperTask.h"
+#include "app.h"
+#include "PWM_User.h"
+
+void sAdcClaSample(void);
+#pragma DATA_SECTION(u16_ClaTest,"CLADataLS1");
+uint16_t u16_ClaTest;
+
+
+
+
+/*******************************************************************************
+ * Function Name: Cla1Task1
+ * Description: The function is for DC-DC controller which is exectuted in the
+ *              CLA
+ *******************************************************************************/
+__interrupt void Cla1Task1 ( void )
+{
+    __mdebugstop();
+    if(++u16_ClaTest >= 18000)
+    {
+        mLedBlue_Toggle();
+        u16_ClaTest = 0;
+    }
+    sAdcClaSample();
+
+    stSampleCalCla.f32_Buck_I1 = (float)stSampleCla.i16_Buck_I1 * cBuck_I_Ratio;
+    stSampleCalCla.f32_Buck_I2 = (float)stSampleCla.i16_Buck_I2 * cBuck_I_Ratio;
+    stSampleCalCla.f32_Output_I = (float)stSampleCla.i16_Output_I * cOutput_I_Ratio;
+    stSampleCalCla.f32_Output_V = (float)stSampleCla.i16_Output_V * cOutput_V_Ratio;
+
+    if((stSuper.u16_SysStatus.BIT.Dc1PwmStatus == 1) ||
+            (stSuper.u16_SysStatus.BIT.Dc2PwmStatus == 1))
+    {
+        if(stOutputCtrl.u16_OutputMode == 0)
+        {
+            //Voltage limit
+            stCtrlPiVout.f32_Max = 0.0f;
+            stCtrlPiPout.f32_Max = 0.0f;
+            if(stOutputCtrl.u16_DcLoopCnt++ >= Fs)
+            {
+                stOutputCtrl.u16_DcLoopCnt = 0;
+                stCtrlPiVout.f32_Fbk = stSampleCalCla.f32_Output_V;
+                stOutputCtrl.f32_VoutRef = stOutputCtrl.f32_VoutRefCmd;
+                stCtrlPiVout.f32_Ref = stOutputCtrl.f32_VoutRef;
+                stCtrlPiVout.f32_Err = stCtrlPiVout.f32_Ref - stCtrlPiVout.f32_Fbk;
+                CTRL_PI(stCtrlPiVout);
+            }
+
+            //stOutputCtrl.f32_IoutRefCmd = (float)U(17);
+
+            //Current Reference calculation
+            if((stOutputCtrl.f32_IoutRef < (stOutputCtrl.f32_IoutRefCmd - stOutputCtrl.f32_IoutStep)))
+            {
+                if(stCtrlPiVout.f32_Uo >= 0.0f)
+                {
+                    stOutputCtrl.f32_IoutRef += stOutputCtrl.f32_IoutStep;
+                }
+            }
+            else if(stOutputCtrl.f32_IoutRef > (stOutputCtrl.f32_IoutRefCmd + stOutputCtrl.f32_IoutStep))
+            {
+                stOutputCtrl.f32_IoutRef -= stOutputCtrl.f32_IoutStep;
+            }
+            else
+            {
+                stOutputCtrl.f32_IoutRef = stOutputCtrl.f32_IoutRefCmd;
+            }
+            stCtrlPiIdc.f32_Ref = stOutputCtrl.f32_IoutRef + stCtrlPiVout.f32_Uo;
+
+        }
+        else if(stOutputCtrl.u16_OutputMode == 1)   //CV
+        {
+            if(stOutputCtrl.u16_DcLoopCnt++ >= Fs)
+            {
+                //stOutputCtrl.f32_VoutRefCmd = (float)U(18);
+                stOutputCtrl.u16_DcLoopCnt = 0;
+                stCtrlPiVout.f32_Fbk = stSampleCalCla.f32_Output_V;
+                if(stOutputCtrl.f32_VoutRef < (stOutputCtrl.f32_VoutRefCmd - stOutputCtrl.f32_VoutStep))
+                {
+                    stOutputCtrl.f32_VoutRef += stOutputCtrl.f32_VoutStep;
+                }
+                else if(stOutputCtrl.f32_VoutRef > (stOutputCtrl.f32_VoutRefCmd + stOutputCtrl.f32_VoutStep))
+                {
+                    stOutputCtrl.f32_VoutRef -= stOutputCtrl.f32_VoutStep;
+                }
+                else
+                {
+                    stOutputCtrl.f32_VoutRef = stOutputCtrl.f32_VoutRefCmd;
+                }
+                stCtrlPiVout.f32_Ref = stOutputCtrl.f32_VoutRef;
+                stCtrlPiVout.f32_Err = stCtrlPiVout.f32_Ref - stCtrlPiVout.f32_Fbk;
+                CTRL_PI(stCtrlPiVout);
+                stCtrlPiIdc.f32_Ref = stCtrlPiVout.f32_Uo;
+            }
+        }
+        else if(stOutputCtrl.u16_OutputMode == 2)
+        {
+            if(stOutputCtrl.u16_DcLoopCnt++ >= Fs)
+            {
+                //stOutputCtrl.f32_PoutRefCmd = (float)U(18);
+                stOutputCtrl.u16_DcLoopCnt = 0;
+                stCtrlPiPout.f32_Fbk = stSampleCalCla.f32_Output_V * (stSampleCalCla.f32_Buck_I1 + stSampleCalCla.f32_Buck_I2);
+                if(stOutputCtrl.f32_PoutRef < (stOutputCtrl.f32_PoutRefCmd - stOutputCtrl.f32_PoutStep))
+                {
+                    stOutputCtrl.f32_PoutRef += stOutputCtrl.f32_PoutStep;
+                }
+                else if(stOutputCtrl.f32_PoutRef > (stOutputCtrl.f32_PoutRefCmd + stOutputCtrl.f32_PoutStep))
+                {
+                    stOutputCtrl.f32_PoutRef -= stOutputCtrl.f32_PoutStep;
+                }
+                else
+                {
+                    stOutputCtrl.f32_PoutRef = stOutputCtrl.f32_PoutRefCmd;
+                }
+                stCtrlPiPout.f32_Ref = stOutputCtrl.f32_PoutRef;
+                stCtrlPiPout.f32_Err = stCtrlPiPout.f32_Ref - stCtrlPiPout.f32_Fbk;
+                CTRL_PI(stCtrlPiPout);
+                stCtrlPiIdc.f32_Ref = stCtrlPiPout.f32_Uo;
+            }
+        }
+
+        //Total Current loop
+        stCtrlPiIdc.f32_Fbk = stSampleCalCla.f32_Buck_I1 + stSampleCalCla.f32_Buck_I2;
+        stCtrlPiIdc.f32_Err = stCtrlPiIdc.f32_Ref - stCtrlPiIdc.f32_Fbk;
+        CTRL_PI(stCtrlPiIdc);
+        //Different Current loop
+        //stCtrlPiIdcDiff.f32_Ref = stSampleCalCla.f32_Buck_I1;
+        //stCtrlPiIdcDiff.f32_Fbk = stSampleCalCla.f32_Buck_I2;
+        stCtrlPiIdcDiff.f32_Err = stSampleCalCla.f32_Buck_I1 - stSampleCalCla.f32_Buck_I2;
+        CTRL_PI(stCtrlPiIdcDiff);
+
+        stCtrlPiIdc.f32_Out = stCtrlPiIdc.f32_Uo + stSampleCalCla.f32_Output_V;  //Feedforward
+        stDcPwmCmpr.f32_DcDuty1 = (stCtrlPiIdc.f32_Out - stCtrlPiIdcDiff.f32_Uo)/stCtrlPiBus.f32_Ref;
+        if(stDcPwmCmpr.f32_DcDuty1 >= cDcDutyMax)
+        {
+            stDcPwmCmpr.f32_DcDuty1 = cDcDutyMax;
+        }
+        else if(stDcPwmCmpr.f32_DcDuty1 <= cDcDutyMin)
+        {
+            stDcPwmCmpr.f32_DcDuty1 = cDcDutyMin;
+        }
+        stDcPwmCmpr.f32_DcDuty2 = (stCtrlPiIdc.f32_Out + stCtrlPiIdcDiff.f32_Uo)/stCtrlPiBus.f32_Ref;
+        if(stDcPwmCmpr.f32_DcDuty2 >= cDcDutyMax)
+        {
+            stDcPwmCmpr.f32_DcDuty2 = cDcDutyMax;
+        }
+        else if(stDcPwmCmpr.f32_DcDuty2 <= cDcDutyMin)
+        {
+            stDcPwmCmpr.f32_DcDuty2 = cDcDutyMin;
+        }
+#if cPWM_OpenLoop_Test == 0
+        stDcPwmCmpr.u16_PwmCmpr1 = stDcPwmCmpr.u16_PeriodCnt - (uint16_t)(stDcPwmCmpr.f32_DcDuty1 * stDcPwmCmpr.u16_PeriodCnt);
+        stDcPwmCmpr.u16_PwmCmpr2 = stDcPwmCmpr.u16_PeriodCnt - (uint16_t)(stDcPwmCmpr.f32_DcDuty2 * stDcPwmCmpr.u16_PeriodCnt);
+#else
+        stDcPwmCmpr.u16_PwmCmpr1 = stDcPwmCmpr.u16_PeriodCnt>>2;
+        stDcPwmCmpr.u16_PwmCmpr2 = stDcPwmCmpr.u16_PeriodCnt>>2;
+#endif
+
+    }
+    else
+    {
+        stDcPwmCmpr.u16_PwmCmpr1 = stDcPwmCmpr.u16_PeriodCnt;
+        stDcPwmCmpr.u16_PwmCmpr2 = stDcPwmCmpr.u16_PeriodCnt;
+    }
+    mDC1_CMPR() = stDcPwmCmpr.u16_PwmCmpr1;
+    mDC2_CMPR() = stDcPwmCmpr.u16_PwmCmpr2;
+
+    stSampleCalCla.f32_Buck_I1_SumTemp += stSampleCalCla.f32_Buck_I1;
+    stSampleCalCla.f32_Buck_I2_SumTemp += stSampleCalCla.f32_Buck_I2;
+    stSampleCalCla.f32_Output_I_SumTemp += stSampleCalCla.f32_Output_I;
+    stSampleCalCla.f32_Output_V_SumTemp += stSampleCalCla.f32_Output_V;
+    stSampleCalCla.u16_SumCntCla++;
+    if(stSampleCalCla.u16_SumCntCla >= stSampleCalCla.u16_SumCntSetCla)
+    {
+        stSampleCalCla.f32_Buck_I1_Sum = stSampleCalCla.f32_Buck_I1_SumTemp;
+        stSampleCalCla.f32_Buck_I2_Sum = stSampleCalCla.f32_Buck_I2_SumTemp;
+        stSampleCalCla.f32_Output_I_Sum = stSampleCalCla.f32_Output_I_SumTemp;
+        stSampleCalCla.f32_Output_V_Sum = stSampleCalCla.f32_Output_V_SumTemp;
+        stSampleCalCla.f32_Buck_I1_SumTemp = 0;
+        stSampleCalCla.f32_Buck_I2_SumTemp = 0;
+        stSampleCalCla.f32_Output_I_SumTemp = 0;
+        stSampleCalCla.f32_Output_V_SumTemp = 0;
+        stSampleCalCla.u16_SumCntCla = 0;
+        stSampleCalCla.u16_DcSumStatus++;
+    }
+
+    AdcdRegs.ADCINTFLGCLR.bit.ADCINT1 = 1;
+    AdcdRegs.ADCINTOVFCLR.bit.ADCINT1 = 1;
+}
+
+void sAdcClaSample(void)
+{
+    if(stSampleCla.u16_MidCalFlag == 1)
+    {
+        stSampleCla.i16_Buck_I1 = (int16_t)(((mAdc_Buck_I1_0() + mAdc_Buck_I1_1())>>1) - stSampleCla.u16_Buck_I1_Mid);
+        stSampleCla.i16_Buck_I2 = (int16_t)(((mAdc_Buck_I2_0() + mAdc_Buck_I2_1())>>1) - stSampleCla.u16_Buck_I2_Mid);
+        stSampleCla.i16_Output_I = (int16_t)(((mAdc_Output_I_0() + mAdc_Output_I_1())>>1) - stSampleCla.u16_Output_I_Mid);
+        stSampleCla.i16_Output_V = (int16_t)(((mAdc_Output_V_0() + mAdc_Output_V_1())>>1));
+    }
+    else
+    {
+        stSampleCla.i16_Buck_I1 = 0;
+        stSampleCla.i16_Buck_I2 = 0;
+        stSampleCla.i16_Output_I = 0;
+        stSampleCla.i16_Output_V = 0;
+
+        stSampleCla.u32_Buck_I1_MidCalSumTemp += mAdc_Buck_I1_0();
+        stSampleCla.u32_Buck_I2_MidCalSumTemp += mAdc_Buck_I2_0();
+        stSampleCla.u32_Output_I_MidCalSumTemp += mAdc_Output_I_0();
+
+        stSampleCla.u16_MidCalCnt++;
+        if(stSampleCla.u16_MidCalCnt >= cAdcMidCalCntSet)
+        {
+            stSampleCla.u16_Buck_I1_Mid = (uint16_t)(stSampleCla.u32_Buck_I1_MidCalSumTemp>>cAdcMidCalN);
+            stSampleCla.u16_Buck_I2_Mid = (uint16_t)(stSampleCla.u32_Buck_I2_MidCalSumTemp>>cAdcMidCalN);
+            stSampleCla.u16_Output_I_Mid = (uint16_t)(stSampleCla.u32_Output_I_MidCalSumTemp>>cAdcMidCalN);
+            stSampleCla.u16_MidCalCnt = 0;
+            stSampleCla.u16_MidCalFlag = 1;
+        }
+    }
+}
+
+__interrupt void Cla1Task2 ( void )
+{
+
+}
+
+__interrupt void Cla1Task3 ( void )
+{
+
+}
+
+__interrupt void Cla1Task4 ( void )
+{
+
+}
+
+__interrupt void Cla1Task5 ( void )
+{
+
+}
+
+__interrupt void Cla1Task6 ( void )
+{
+
+}
+
+__interrupt void Cla1Task7 ( void )
+{
+
+}
+
+__interrupt void Cla1Task8 ( void )
+{
+    u16_ClaTest = 5;
+    stSampleCalCla.f32_Buck_I1_SumTemp = 0;
+    stSampleCalCla.f32_Buck_I2_SumTemp = 0;
+    stSampleCalCla.f32_Output_I_SumTemp = 0;
+    stSampleCalCla.f32_Output_V_SumTemp = 0;
+    stSampleCalCla.u16_SumCntCla = 0;
+    stSampleCalCla.u16_DcSumStatus = 0;
+}
+
+
+
+
